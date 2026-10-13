@@ -2,10 +2,10 @@ import csv
 import os
 import random
 import torch
+from protocolo.config import conjuntos, familias, semente, tarefas, versao
 from protocolo.juizes import (
     carregar,
     carregar_lexico,
-    emocoes,
     juiz_atencao,
     juiz_embeddings,
     juiz_nli,
@@ -14,130 +14,89 @@ from protocolo.juizes import (
     voto,
 )
 
-familias = {
-    "transformer": {
-        "encoder": "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-        "nli": "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7",
-    },
-    "deepseek": {
-        "llm": os.environ.get("LLM", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"),
-    },
-}
-
 familia = os.environ.get("FAMILIA", "transformer")
-amostra = int(os.environ.get("AMOSTRA", 100))
-caminho_lexico = os.environ.get("LEXICO", "dados/lexico.csv")
-conjunto = os.environ.get("CONJUNTO", "carolina")
-nome_saida = familias["deepseek"]["llm"].split("/")[-1].lower() if familia == "deepseek" else familia
-saida = f"saida/juizes_{nome_saida}_{conjunto}.csv"
-semente = 42
+nome_tarefa = os.environ.get("TAREFA", "polaridade")
+tarefa = tarefas[nome_tarefa]
+rotulos = tarefa["rotulos"]
+modelos = dict(familias[familia])
+if familia == "deepseek":
+    modelos["llm"] = os.environ.get("LLM", modelos["llm"])
+nome_familia = modelos["llm"].split("/")[-1].lower() if familia == "deepseek" else familia
+pasta = f"saida/{versao}"
 
 random.seed(semente)
 torch.manual_seed(semente)
 
-if conjunto == "goemotions":
-    with open("dados/goemotions_teste.csv", encoding="utf-8") as f:
-        todas = [linha for linha in csv.DictReader(f) if linha["rotulo"] in emocoes]
-    linhas = []
-    for emocao in emocoes:
-        da_emocao = [linha for linha in todas if linha["rotulo"] == emocao]
-        linhas += random.sample(da_emocao, min(amostra // len(emocoes), len(da_emocao)))
-else:
-    with open("saida/polaridade.csv", encoding="utf-8") as f:
-        linhas = [
-            linha for linha in csv.DictReader(f)
-            if linha["bertweet_faixa"] != "neutro" and linha["roberta_faixa"] != "neutro"
-        ]
-    linhas = random.sample(linhas, min(amostra, len(linhas)))
-
-tem_gabarito = conjunto == "goemotions"
-textos = [linha["texto"] for linha in linhas]
-
-lexico = carregar_lexico(caminho_lexico) if os.path.exists(caminho_lexico) else {}
+lexico = carregar_lexico(tarefa["lexico"], rotulos) if os.path.exists(tarefa["lexico"]) else {}
 if not lexico:
-    print(f"Léxico não encontrado em {caminho_lexico}, o juiz de atenção vai se abster em todas as frases.\n")
+    print(f"Léxico não encontrado em {tarefa['lexico']}, o juiz de atenção vai se abster em todas as frases.\n")
 
-modelos = familias[familia]
+decoder = familia == "deepseek"
+tokenizer, model = carregar(modelos["llm"] if decoder else modelos["encoder"], decoder=decoder)
+os.makedirs(pasta, exist_ok=True)
 
-if familia == "deepseek":
-    tokenizer, model = carregar(modelos["llm"], decoder=True)
-    scores = {
-        "embeddings": juiz_embeddings(tokenizer, model, textos, decoder=True),
-        "nli": juiz_nli_llm(tokenizer, model, textos),
-        "atencao": juiz_atencao(tokenizer, model, textos, lexico, decoder=True),
-    }
-else:
-    tokenizer, model = carregar(modelos["encoder"])
-    scores = {
-        "embeddings": juiz_embeddings(tokenizer, model, textos),
-        "nli": juiz_nli(modelos["nli"], textos),
-        "atencao": juiz_atencao(tokenizer, model, textos, lexico),
-    }
+for conjunto in conjuntos:
+    with open(f"dados/amostra_{conjunto}.csv", encoding="utf-8") as f:
+        linhas = list(csv.DictReader(f))
+    textos = [linha["texto"] for linha in linhas]
+    tem_gabarito = tarefa["gabarito"] == conjunto
 
-juizes = list(scores)
-votos = [[voto(scores[juiz][i]) for juiz in juizes] for i in range(len(textos))]
+    if decoder:
+        scores = {
+            "embeddings": juiz_embeddings(tokenizer, model, textos, tarefa["prototipos"], tarefa["resumo"]),
+            "nli": juiz_nli_llm(tokenizer, model, textos, rotulos, tarefa["pergunta"]),
+            "atencao": juiz_atencao(tokenizer, model, textos, lexico, rotulos, decoder=True),
+        }
+    else:
+        scores = {
+            "embeddings": juiz_embeddings(tokenizer, model, textos, tarefa["prototipos"]),
+            "nli": juiz_nli(modelos["nli"], textos, rotulos, tarefa["hipotese"]),
+            "atencao": juiz_atencao(tokenizer, model, textos, lexico, rotulos),
+        }
 
-os.makedirs("saida", exist_ok=True)
+    juizes = list(scores)
+    votos = [[voto(scores[juiz][i], rotulos) for juiz in juizes] for i in range(len(textos))]
+    saida = f"{pasta}/juizes_{nome_familia}_{nome_tarefa}_{conjunto}.csv"
 
-concordancias = []
-rotulos_juizes = []
-with open(saida, "w", newline="", encoding="utf-8") as f:
-    writer = csv.writer(f)
-    cabecalho = ["id", "texto"]
-    for juiz in juizes:
-        cabecalho += [f"{juiz}_{emocao}" for emocao in emocoes] + [f"{juiz}_voto"]
-    cabecalho += ["rotulo_juizes", "concordancia", "divergente"]
-    if tem_gabarito:
-        cabecalho += ["rotulo_humano", "concordancia_humana"]
-    writer.writerow(cabecalho)
+    concordancias = []
+    maiorias = []
+    with open(saida, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        cabecalho = ["id", "texto"]
+        for juiz in juizes:
+            cabecalho += [f"{juiz}_{rotulo}" for rotulo in rotulos] + [f"{juiz}_voto"]
+        cabecalho += ["maioria", "concordancia", "gabarito"]
+        writer.writerow(cabecalho)
 
-    for i, linha in enumerate(linhas):
-        validos = [v for v in votos[i] if v]
-        rotulo = max(set(validos), key=validos.count) if validos else ""
-        concordancia = validos.count(rotulo) if validos else 0
-        concordancias.append(concordancia)
+        for i, linha in enumerate(linhas):
+            validos = [v for v in votos[i] if v]
+            maioria = max(set(validos), key=validos.count) if validos else ""
+            concordancia = validos.count(maioria) if validos else 0
+            concordancias.append(concordancia)
+            maiorias.append(maioria)
 
-        registro = [linha["id"], linha["texto"]]
-        for j, juiz in enumerate(juizes):
-            registro += [f"{s:.4f}" for s in scores[juiz][i]] + [votos[i][j] or ""]
-        registro += [rotulo if concordancia >= 2 else "", concordancia, int(concordancia < len(juizes))]
-        if tem_gabarito:
-            registro += [linha["rotulo"], linha["concordancia_humana"]]
-        writer.writerow(registro)
-        rotulos_juizes.append(rotulo)
+            registro = [linha["id"], linha["texto"]]
+            for j, juiz in enumerate(juizes):
+                registro += [f"{s:.4f}" for s in scores[juiz][i]] + [votos[i][j] or ""]
+            registro += [maioria, concordancia, linha["gabarito"] if tem_gabarito else ""]
+            writer.writerow(registro)
 
-print(f"--- TRÊS JUÍZES ({familia.upper()}) EM {len(textos)} FRASES DO {conjunto.upper()} ---\n")
-for j, juiz in enumerate(juizes):
-    contagem = {emocao: 0 for emocao in emocoes + [None]}
-    for v in votos:
-        contagem[v[j]] += 1
-    print(f"{juiz}: " + " | ".join(f"{e or 'absteve'}: {c}" for e, c in contagem.items()))
-
-print("-" * 60)
-for n in range(len(juizes), -1, -1):
-    print(f"{n} juízes concordam: {concordancias.count(n)} frases")
-kappa, usadas = kappa_fleiss(votos)
-print(f"Kappa de Fleiss: {kappa:.4f} (nas {usadas} frases em que nenhum juiz se absteve)")
-
-if tem_gabarito:
-    gabarito = [linha["rotulo"] for linha in linhas]
-    humana = [float(linha["concordancia_humana"]) for linha in linhas]
-
-    print("-" * 60)
+    print(f"--- {nome_tarefa.upper()} | {nome_familia.upper()} | {len(textos)} FRASES DO {conjunto.upper()} ---")
     for j, juiz in enumerate(juizes):
-        acertos = sum(v[j] == g for v, g in zip(votos, gabarito))
-        print(f"Acurácia do juiz {juiz}: {acertos / len(gabarito) * 100:.2f}%")
-    acertos = sum(r == g for r, g in zip(rotulos_juizes, gabarito))
-    print(f"Acurácia da maioria: {acertos / len(gabarito) * 100:.2f}% (chance: {100 / len(emocoes):.2f}%)")
+        contagem = {rotulo: 0 for rotulo in rotulos + [None]}
+        for v in votos:
+            contagem[v[j]] += 1
+        print(f"{juiz}: " + " | ".join(f"{r or 'absteve'}: {c}" for r, c in contagem.items()))
+    for n in range(len(juizes), -1, -1):
+        print(f"{n} juízes concordam: {concordancias.count(n)} frases")
+    kappa, usadas = kappa_fleiss(votos, rotulos)
+    print(f"Kappa de Fleiss: {kappa:.4f} (nas {usadas} frases em que nenhum juiz se absteve)")
 
-    print("-" * 60)
-    print("Hipótese: quanto mais juízes concordam, mais o rótulo acerta")
-    for n in range(len(juizes), 0, -1):
-        indices = [i for i, c in enumerate(concordancias) if c == n]
-        if not indices:
-            continue
-        acerto = sum(rotulos_juizes[i] == gabarito[i] for i in indices) / len(indices) * 100
-        media_humana = sum(humana[i] for i in indices) / len(indices)
-        print(f"  {n} juízes concordam: {len(indices)} frases, acerto {acerto:.2f}%, concordância humana média {media_humana:.3f}")
-
-print(f"Resultado frase a frase em {saida}")
+    if tem_gabarito:
+        gabarito = [linha["gabarito"] for linha in linhas]
+        for j, juiz in enumerate(juizes):
+            acertos = sum(v[j] == g for v, g in zip(votos, gabarito))
+            print(f"Acurácia do juiz {juiz}: {acertos / len(gabarito) * 100:.2f}%")
+        acertos = sum(m == g for m, g in zip(maiorias, gabarito))
+        print(f"Acurácia da maioria: {acertos / len(gabarito) * 100:.2f}% (chance: {100 / len(rotulos):.2f}%)")
+    print(f"Resultado frase a frase em {saida}\n")

@@ -11,25 +11,7 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
 )
-
-emocoes = ["alegria", "tristeza", "raiva", "medo", "surpresa", "nojo"]
-
-prototipos = {
-    "alegria": ["Estou muito feliz hoje!", "Que notícia maravilhosa, adorei!", "Isso me deixou radiante."],
-    "tristeza": ["Estou muito triste.", "Que saudade, meu coração está partido.", "Isso me deixou para baixo."],
-    "raiva": ["Estou com muita raiva!", "Que ódio, isso é um absurdo!", "Fiquei furioso com isso."],
-    "medo": ["Estou com muito medo.", "Isso me deixa apavorado.", "Tenho pavor do que pode acontecer."],
-    "surpresa": ["Nossa, não acredito!", "Que surpresa, eu não esperava por isso!", "Fiquei chocado com a novidade."],
-    "nojo": ["Que nojo!", "Isso é repugnante.", "Senti nojo daquilo."],
-}
-
-hipotese = "Este texto expressa {}."
-
-resumo_llm = "Texto: \"{texto}\"\nEm uma palavra, a emoção deste texto é:"
-
-neutros_llm = ["N/A", "", "[sem texto]"]
-
-pergunta_llm = "Texto: \"{texto}\"\nPergunta: Este texto expressa {emocao}? Responda apenas sim ou não.\nResposta:"
+from protocolo.config import neutros_llm
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -39,12 +21,12 @@ def normalizar(palavra):
     return "".join(c for c in sem_acento if unicodedata.category(c) != "Mn")
 
 
-def carregar_lexico(caminho):
+def carregar_lexico(caminho, rotulos):
     lexico = {}
     with open(caminho, encoding="utf-8") as f:
         for linha in csv.DictReader(f):
-            if linha["emocao"] in emocoes:
-                lexico.setdefault(normalizar(linha["palavra"]), set()).add(linha["emocao"])
+            if linha["rotulo"] in rotulos:
+                lexico.setdefault(normalizar(linha["palavra"]), set()).add(linha["rotulo"])
     return lexico
 
 
@@ -62,26 +44,26 @@ def carregar(nome_modelo, decoder=False):
     return tokenizer, model
 
 
-def embeddings(tokenizer, model, textos, decoder=False):
+def embeddings(tokenizer, model, textos, resumo=None):
     vetores = []
     for texto in textos:
-        entrada = resumo_llm.format(texto=texto) if decoder else texto
+        entrada = resumo.format(texto=texto) if resumo else texto
         inputs = tokenizer(entrada, truncation=True, max_length=160, return_tensors="pt").to(model.device)
         with torch.no_grad():
             estados = model(**inputs, output_hidden_states=True).hidden_states[-1][0].float()
-        vetores.append(F.normalize(estados[-1] if decoder else estados.mean(dim=0), dim=0))
+        vetores.append(F.normalize(estados[-1] if resumo else estados.mean(dim=0), dim=0))
     return torch.stack(vetores)
 
 
-def juiz_embeddings(tokenizer, model, textos, decoder=False):
+def juiz_embeddings(tokenizer, model, textos, prototipos, resumo=None):
     centros = torch.stack([
-        F.normalize(embeddings(tokenizer, model, prototipos[emocao], decoder).mean(dim=0), dim=0)
-        for emocao in emocoes
+        F.normalize(embeddings(tokenizer, model, frases, resumo).mean(dim=0), dim=0)
+        for frases in prototipos.values()
     ])
-    return (embeddings(tokenizer, model, textos, decoder) @ centros.T).cpu().tolist()
+    return (embeddings(tokenizer, model, textos, resumo) @ centros.T).cpu().tolist()
 
 
-def juiz_nli(nome_modelo, textos):
+def juiz_nli(nome_modelo, textos, rotulos, hipotese):
     tokenizer = AutoTokenizer.from_pretrained(nome_modelo)
     model = AutoModelForSequenceClassification.from_pretrained(nome_modelo).to(device)
     model.eval()
@@ -90,8 +72,8 @@ def juiz_nli(nome_modelo, textos):
     scores = []
     for texto in textos:
         inputs = tokenizer(
-            [texto] * len(emocoes),
-            [hipotese.format(emocao) for emocao in emocoes],
+            [texto] * len(rotulos),
+            [hipotese.format(rotulo) for rotulo in rotulos],
             padding=True,
             truncation=True,
             max_length=128,
@@ -103,18 +85,18 @@ def juiz_nli(nome_modelo, textos):
     return scores
 
 
-def juiz_nli_llm(tokenizer, model, textos):
+def juiz_nli_llm(tokenizer, model, textos, rotulos, pergunta):
     sim = tokenizer.encode(" sim", add_special_tokens=False)[0]
     nao = tokenizer.encode(" não", add_special_tokens=False)[0]
 
-    def chance_sim(texto, emocao):
-        inputs = tokenizer(pergunta_llm.format(texto=texto, emocao=emocao), return_tensors="pt").to(model.device)
+    def chance_sim(texto, rotulo):
+        inputs = tokenizer(pergunta.format(texto=texto, rotulo=rotulo), return_tensors="pt").to(model.device)
         with torch.no_grad():
             logits = model(**inputs).logits[0, -1].float()
         return (logits[sim] - logits[nao]).item()
 
-    base = [sum(chance_sim(neutro, emocao) for neutro in neutros_llm) / len(neutros_llm) for emocao in emocoes]
-    return [[chance_sim(texto, emocao) - base[i] for i, emocao in enumerate(emocoes)] for texto in textos]
+    base = [sum(chance_sim(neutro, rotulo) for neutro in neutros_llm) / len(neutros_llm) for rotulo in rotulos]
+    return [[chance_sim(texto, rotulo) - base[i] for i, rotulo in enumerate(rotulos)] for texto in textos]
 
 
 def atencao_por_palavra(tokenizer, model, texto, decoder):
@@ -145,33 +127,33 @@ def atencao_por_palavra(tokenizer, model, texto, decoder):
     return {palavra: peso / total for palavra, peso in pesos.items()}
 
 
-def juiz_atencao(tokenizer, model, textos, lexico, decoder=False):
+def juiz_atencao(tokenizer, model, textos, lexico, rotulos, decoder=False):
     scores = []
     for texto in textos:
         pesos = atencao_por_palavra(tokenizer, model, texto, decoder)
-        linha = [0.0] * len(emocoes)
+        linha = [0.0] * len(rotulos)
         for palavra, peso in pesos.items():
-            for emocao in lexico.get(palavra, ()):
-                linha[emocoes.index(emocao)] += peso
+            for rotulo in lexico.get(palavra, ()):
+                linha[rotulos.index(rotulo)] += peso
         scores.append(linha)
     return scores
 
 
-def voto(scores):
+def voto(scores, rotulos):
     if max(scores) <= 0:
         return None
-    return emocoes[max(range(len(scores)), key=lambda i: scores[i])]
+    return rotulos[max(range(len(scores)), key=lambda i: scores[i])]
 
 
-def kappa_fleiss(votos):
+def kappa_fleiss(votos, rotulos):
     validos = [v for v in votos if None not in v]
     if len(validos) < 2:
         return float("nan"), len(validos)
 
     n = len(validos[0])
-    contagens = [[v.count(emocao) for emocao in emocoes] for v in validos]
+    contagens = [[v.count(rotulo) for rotulo in rotulos] for v in validos]
     p_i = [(sum(c * c for c in linha) - n) / (n * (n - 1)) for linha in contagens]
-    p_j = [sum(linha[j] for linha in contagens) / (len(validos) * n) for j in range(len(emocoes))]
+    p_j = [sum(linha[j] for linha in contagens) / (len(validos) * n) for j in range(len(rotulos))]
 
     p_barra = sum(p_i) / len(p_i)
     p_e = sum(p * p for p in p_j)
