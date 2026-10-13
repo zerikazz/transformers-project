@@ -85,12 +85,18 @@ def juiz_nli(nome_modelo, textos, rotulos, hipotese):
     return scores
 
 
+def no_chat(tokenizer, mensagem):
+    conversa = [{"role": "user", "content": mensagem}]
+    return tokenizer.apply_chat_template(conversa, tokenize=False, add_generation_prompt=True) + "\n</think>\n\n"
+
+
 def juiz_nli_llm(tokenizer, model, textos, rotulos, pergunta):
-    sim = tokenizer.encode(" sim", add_special_tokens=False)[0]
-    nao = tokenizer.encode(" não", add_special_tokens=False)[0]
+    sim = tokenizer.encode("Sim", add_special_tokens=False)[0]
+    nao = tokenizer.encode("Não", add_special_tokens=False)[0]
 
     def chance_sim(texto, rotulo):
-        inputs = tokenizer(pergunta.format(texto=texto, rotulo=rotulo), return_tensors="pt").to(model.device)
+        entrada = no_chat(tokenizer, pergunta.format(texto=texto, rotulo=rotulo))
+        inputs = tokenizer(entrada, add_special_tokens=False, return_tensors="pt").to(model.device)
         with torch.no_grad():
             logits = model(**inputs).logits[0, -1].float()
         return (logits[sim] - logits[nao]).item()
@@ -135,6 +141,18 @@ def juiz_atencao(tokenizer, model, textos, lexico, rotulos, decoder=False):
         for palavra, peso in pesos.items():
             for rotulo in lexico.get(palavra, ()):
                 linha[rotulos.index(rotulo)] += peso
+        scores.append(linha)
+    return scores
+
+
+def juiz_lexico(textos, lexico, rotulos):
+    scores = []
+    for texto in textos:
+        palavras = [normalizar(m.group()) for m in re.finditer(r"\w+", texto)]
+        linha = [0.0] * len(rotulos)
+        for palavra in palavras:
+            for rotulo in lexico.get(palavra, ()):
+                linha[rotulos.index(rotulo)] += 1 / len(palavras)
         scores.append(linha)
     return scores
 
