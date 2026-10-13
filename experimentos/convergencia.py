@@ -1,6 +1,9 @@
 import csv
 import os
 import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from protocolo.config import conjuntos, familias, reamostragens, semente, tarefas, versao
 
 juizes = ["embeddings", "nli", "atencao"]
@@ -12,6 +15,16 @@ rng = np.random.default_rng(semente)
 def ler(nome_familia, tarefa, conjunto):
     with open(f"{pasta}/juizes_{nome_familia}_{tarefa}_{conjunto}.csv", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def colunas_dos_juizes(linhas, rotulos):
+    return np.array([[float(linha[f"{juiz}_{rotulo}"]) for juiz in juizes for rotulo in rotulos] for linha in linhas])
+
+
+def pesos(nome_familia, tarefa, rotulos):
+    calibracao = ler(nome_familia, tarefa, "calibracao")
+    modelo = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000, random_state=semente))
+    return modelo.fit(colunas_dos_juizes(calibracao, rotulos), [linha["gabarito"] for linha in calibracao])
 
 
 def kappa_cohen(a, b):
@@ -43,16 +56,22 @@ def registrar(tarefa, conjunto, medida, funcao, n, frases):
 
 
 for tarefa in tarefas:
+    rotulos = tarefas[tarefa]["rotulos"]
+    pesos_t = pesos("transformer", tarefa, rotulos)
+    pesos_d = pesos(llm, tarefa, rotulos)
     for conjunto in conjuntos:
         t = ler("transformer", tarefa, conjunto)
         d = ler(llm, tarefa, conjunto)
         if [linha["id"] for linha in t] != [linha["id"] for linha in d]:
             raise SystemExit(f"As duas famílias não usaram as mesmas frases em {tarefa}/{conjunto}")
         n = len(t)
+        for linhas, modelo in [(t, pesos_t), (d, pesos_d)]:
+            for linha, previsto in zip(linhas, modelo.predict(colunas_dos_juizes(linhas, rotulos))):
+                linha["ponderado"] = previsto
         print(f"--- {tarefa.upper()} NO {conjunto.upper()}: TRANSFORMER X {llm.upper()} ---")
 
-        for juiz in juizes + ["maioria"]:
-            coluna = juiz if juiz == "maioria" else f"{juiz}_voto"
+        for juiz in juizes + ["lexico", "maioria", "ponderado"]:
+            coluna = juiz if juiz in ("maioria", "ponderado") else f"{juiz}_voto"
             a = np.array([linha[coluna] for linha in t])
             b = np.array([linha[coluna] for linha in d])
             igual = (a == b) & (a != "")
@@ -77,10 +96,17 @@ for tarefa in tarefas:
                 media_onde(convergem, filtro), n, int(filtro.sum()),
             )
 
+        for nome, linhas in [("transformer", t), (llm, d)]:
+            atencao = np.array([linha["atencao_voto"] for linha in linhas])
+            lexico = np.array([linha["lexico_voto"] for linha in linhas])
+            registrar(tarefa, conjunto, f"atenção vota igual ao léxico sozinho ({nome})", lambda i: (atencao[i] == lexico[i]).mean(), n, n)
+
         gabarito = np.array([linha["gabarito"] for linha in t])
         if (gabarito != "").all():
-            registrar(tarefa, conjunto, "acerto do transformer", lambda i: (maioria_t[i] == gabarito[i]).mean(), n, n)
-            registrar(tarefa, conjunto, f"acerto do {llm}", lambda i: (maioria_d[i] == gabarito[i]).mean(), n, n)
+            for nome, linhas in [("transformer", t), (llm, d)]:
+                for coluna in ["atencao_voto", "lexico_voto", "maioria", "ponderado"]:
+                    decisao = np.array([linha[coluna] for linha in linhas])
+                    registrar(tarefa, conjunto, f"acerto {coluna} ({nome})", lambda i: (decisao[i] == gabarito[i]).mean(), n, n)
             acerto = maioria_t == gabarito
             registrar(tarefa, conjunto, "acerto onde as famílias convergem", media_onde(acerto, convergem), n, int(convergem.sum()))
             registrar(tarefa, conjunto, "acerto do transformer onde as famílias divergem", media_onde(acerto, ~convergem), n, int((~convergem).sum()))
