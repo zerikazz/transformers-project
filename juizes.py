@@ -94,17 +94,14 @@ def juiz_nli_llm(tokenizer, model, textos):
     sim = tokenizer.encode(" sim", add_special_tokens=False)[0]
     nao = tokenizer.encode(" não", add_special_tokens=False)[0]
 
-    scores = []
-    for texto in textos:
-        linha = []
-        for emocao in emocoes:
-            prompt = pergunta_llm.format(texto=texto, emocao=emocao)
-            inputs = tokenizer(prompt, return_tensors="pt").to(device)
-            with torch.no_grad():
-                logits = model(**inputs).logits[0, -1].float()
-            linha.append(F.softmax(logits[[sim, nao]], dim=-1)[0].item())
-        scores.append(linha)
-    return scores
+    def prob_sim(texto, emocao):
+        inputs = tokenizer(pergunta_llm.format(texto=texto, emocao=emocao), return_tensors="pt").to(device)
+        with torch.no_grad():
+            logits = model(**inputs).logits[0, -1].float()
+        return F.softmax(logits[[sim, nao]], dim=-1)[0].item()
+
+    base = [prob_sim("N/A", emocao) for emocao in emocoes]
+    return [[prob_sim(texto, emocao) - base[i] for i, emocao in enumerate(emocoes)] for texto in textos]
 
 
 def atencao_por_palavra(tokenizer, model, texto, decoder):
