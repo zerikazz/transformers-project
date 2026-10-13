@@ -19,8 +19,12 @@ faixas = [
     (0.6, "muito positivo"),
 ]
 
-entrada = "dados/carolina_soc.csv"
-saida = "saida/polaridade.csv"
+entrada = os.environ.get("ENTRADA", "dados/carolina_soc.csv")
+saida = os.environ.get("SAIDA", "saida/polaridade.csv")
+bertimbau = "saida/modelos/bertimbau-sentimento"
+
+if os.path.isdir(bertimbau):
+    modelos["bertimbau"] = bertimbau
 amostra = int(os.environ.get("AMOSTRA", 500))
 semente = 42
 lote = 32
@@ -88,7 +92,7 @@ scores = {nome: resultados[nome][:, 2] - resultados[nome][:, 0] for nome in mode
 rotulos = {nome: resultados[nome].argmax(axis=1) for nome in modelos}
 nomes = list(modelos)
 
-print(f"--- POLARIDADE EM {len(textos)} FRASES DO CAROLINA (SOC) ---\n")
+print(f"--- POLARIDADE EM {len(textos)} FRASES DE {entrada} ---\n")
 for nome in nomes:
     contagem = {rotulo: 0 for _, rotulo in faixas}
     for score in scores[nome]:
@@ -98,10 +102,20 @@ for nome in nomes:
     print(nome)
     print("  frases por faixa linear: " + " | ".join(f"{r}: {c}" for r, c in contagem.items()))
     print("  cortes se as faixas tivessem o mesmo número de frases: " + " | ".join(f"{q:.2f}" for q in quantis))
+
+    if "rotulo" in linhas[0]:
+        classes = ["negativo", "neutro", "positivo"]
+        gabarito = np.array([classes.index(linha["rotulo"]) for linha in linhas])
+        acuracia = (rotulos[nome] == gabarito).mean() * 100
+        print(f"  acurácia contra o rótulo humano: {acuracia:.2f}%")
+        for i, classe in enumerate(classes):
+            media = scores[nome][gabarito == i].mean()
+            print(f"  score médio das frases {classe}s: {media:+.3f}")
     print("-" * 60)
 
-concordancia = (rotulos[nomes[0]] == rotulos[nomes[1]]).mean() * 100
-correlacao = np.corrcoef(scores[nomes[0]], scores[nomes[1]])[0, 1]
-print(f"Mesmo rótulo nos dois modelos: {concordancia:.2f}%")
-print(f"Correlação entre os scores: {correlacao:.4f}")
+for a in range(len(nomes)):
+    for b in range(a + 1, len(nomes)):
+        concordancia = (rotulos[nomes[a]] == rotulos[nomes[b]]).mean() * 100
+        correlacao = np.corrcoef(scores[nomes[a]], scores[nomes[b]])[0, 1]
+        print(f"{nomes[a]} x {nomes[b]}: mesmo rótulo em {concordancia:.2f}%, correlação dos scores {correlacao:.4f}")
 print(f"Resultado frase a frase em {saida}")
