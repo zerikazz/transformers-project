@@ -2,13 +2,13 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-model_name_bert = "pysentimiento/bertweet-pt-sentiment"
+model_name_bertweet = "pysentimiento/bertweet-pt-sentiment"
 
 id2label = {0: "Negativo", 1: "Neutro", 2: "Positivo"}
 
-tokenizer = AutoTokenizer.from_pretrained(model_name_bert)
+tokenizer = AutoTokenizer.from_pretrained(model_name_bertweet)
 model = AutoModelForSequenceClassification.from_pretrained(
-    model_name_bert, 
+    model_name_bertweet, 
     num_labels=len(id2label)
 )
 
@@ -36,7 +36,7 @@ probabilities = F.softmax(logits, dim=-1)
 
 predicted_classes = torch.argmax(probabilities, dim=-1)
 
-print("--- RESULTADOS DA CLASSIFICAÇÃO COM BERTIMBAU ---\n")
+print("--- RESULTADOS DA CLASSIFICAÇÃO COM BERTWEET-PT ---\n")
 for i, phrase in enumerate(phrases):
     pred_id = predicted_classes[i].item()
     pred_label = id2label[pred_id]
