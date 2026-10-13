@@ -8,6 +8,7 @@ from protocolo.juizes import (
     carregar_lexico,
     juiz_atencao,
     juiz_embeddings,
+    juiz_lexico,
     juiz_nli,
     juiz_nli_llm,
     kappa_fleiss,
@@ -35,11 +36,12 @@ decoder = familia == "deepseek"
 tokenizer, model = carregar(modelos["llm"] if decoder else modelos["encoder"], decoder=decoder)
 os.makedirs(pasta, exist_ok=True)
 
-for conjunto in conjuntos:
-    with open(f"dados/amostra_{conjunto}.csv", encoding="utf-8") as f:
+for conjunto in conjuntos + ["calibracao"]:
+    arquivo = f"dados/calibracao_{nome_tarefa}.csv" if conjunto == "calibracao" else f"dados/amostra_{conjunto}.csv"
+    with open(arquivo, encoding="utf-8") as f:
         linhas = list(csv.DictReader(f))
     textos = [linha["texto"] for linha in linhas]
-    tem_gabarito = tarefa["gabarito"] == conjunto
+    tem_gabarito = conjunto in (tarefa["gabarito"], "calibracao")
 
     if decoder:
         scores = {
@@ -55,6 +57,7 @@ for conjunto in conjuntos:
         }
 
     juizes = list(scores)
+    controle = juiz_lexico(textos, lexico, rotulos)
     votos = [[voto(scores[juiz][i], rotulos) for juiz in juizes] for i in range(len(textos))]
     saida = f"{pasta}/juizes_{nome_familia}_{nome_tarefa}_{conjunto}.csv"
 
@@ -65,6 +68,7 @@ for conjunto in conjuntos:
         cabecalho = ["id", "texto"]
         for juiz in juizes:
             cabecalho += [f"{juiz}_{rotulo}" for rotulo in rotulos] + [f"{juiz}_voto"]
+        cabecalho += [f"lexico_{rotulo}" for rotulo in rotulos] + ["lexico_voto"]
         cabecalho += ["maioria", "concordancia", "gabarito"]
         writer.writerow(cabecalho)
 
@@ -78,6 +82,7 @@ for conjunto in conjuntos:
             registro = [linha["id"], linha["texto"]]
             for j, juiz in enumerate(juizes):
                 registro += [f"{s:.4f}" for s in scores[juiz][i]] + [votos[i][j] or ""]
+            registro += [f"{s:.4f}" for s in controle[i]] + [voto(controle[i], rotulos) or ""]
             registro += [maioria, concordancia, linha["gabarito"] if tem_gabarito else ""]
             writer.writerow(registro)
 
