@@ -3,11 +3,13 @@ import re
 import unicodedata
 import torch
 import torch.nn.functional as F
+import os
 from transformers import (
     AutoModel,
     AutoModelForCausalLM,
     AutoModelForSequenceClassification,
     AutoTokenizer,
+    BitsAndBytesConfig,
 )
 
 emocoes = ["alegria", "tristeza", "raiva", "medo", "surpresa", "nojo"]
@@ -22,6 +24,10 @@ prototipos = {
 }
 
 hipotese = "Este texto expressa {}."
+
+resumo_llm = "Texto: \"{texto}\"\nEm uma palavra, a emoção deste texto é:"
+
+neutros_llm = ["N/A", "", "[sem texto]"]
 
 pergunta_llm = "Texto: \"{texto}\"\nPergunta: Este texto expressa {emocao}? Responda apenas sim ou não.\nResposta:"
 
@@ -45,27 +51,34 @@ def carregar_lexico(caminho):
 def carregar(nome_modelo, decoder=False):
     tokenizer = AutoTokenizer.from_pretrained(nome_modelo)
     classe = AutoModelForCausalLM if decoder else AutoModel
-    model = classe.from_pretrained(nome_modelo, dtype="auto", attn_implementation="eager").to(device)
+    if os.environ.get("QUANTIZAR") == "4bit":
+        quantizacao = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+        model = classe.from_pretrained(
+            nome_modelo, quantization_config=quantizacao, device_map="auto", attn_implementation="eager"
+        )
+    else:
+        model = classe.from_pretrained(nome_modelo, dtype="auto", attn_implementation="eager").to(device)
     model.eval()
     return tokenizer, model
 
 
-def embeddings(tokenizer, model, textos):
+def embeddings(tokenizer, model, textos, decoder=False):
     vetores = []
     for texto in textos:
-        inputs = tokenizer(texto, truncation=True, max_length=128, return_tensors="pt").to(device)
+        entrada = resumo_llm.format(texto=texto) if decoder else texto
+        inputs = tokenizer(entrada, truncation=True, max_length=160, return_tensors="pt").to(model.device)
         with torch.no_grad():
             estados = model(**inputs, output_hidden_states=True).hidden_states[-1][0].float()
-        vetores.append(F.normalize(estados.mean(dim=0), dim=0))
+        vetores.append(F.normalize(estados[-1] if decoder else estados.mean(dim=0), dim=0))
     return torch.stack(vetores)
 
 
-def juiz_embeddings(tokenizer, model, textos):
+def juiz_embeddings(tokenizer, model, textos, decoder=False):
     centros = torch.stack([
-        F.normalize(embeddings(tokenizer, model, prototipos[emocao]).mean(dim=0), dim=0)
+        F.normalize(embeddings(tokenizer, model, prototipos[emocao], decoder).mean(dim=0), dim=0)
         for emocao in emocoes
     ])
-    return (embeddings(tokenizer, model, textos) @ centros.T).cpu().tolist()
+    return (embeddings(tokenizer, model, textos, decoder) @ centros.T).cpu().tolist()
 
 
 def juiz_nli(nome_modelo, textos):
@@ -94,20 +107,20 @@ def juiz_nli_llm(tokenizer, model, textos):
     sim = tokenizer.encode(" sim", add_special_tokens=False)[0]
     nao = tokenizer.encode(" não", add_special_tokens=False)[0]
 
-    def prob_sim(texto, emocao):
-        inputs = tokenizer(pergunta_llm.format(texto=texto, emocao=emocao), return_tensors="pt").to(device)
+    def chance_sim(texto, emocao):
+        inputs = tokenizer(pergunta_llm.format(texto=texto, emocao=emocao), return_tensors="pt").to(model.device)
         with torch.no_grad():
             logits = model(**inputs).logits[0, -1].float()
-        return F.softmax(logits[[sim, nao]], dim=-1)[0].item()
+        return (logits[sim] - logits[nao]).item()
 
-    base = [prob_sim("N/A", emocao) for emocao in emocoes]
-    return [[prob_sim(texto, emocao) - base[i] for i, emocao in enumerate(emocoes)] for texto in textos]
+    base = [sum(chance_sim(neutro, emocao) for neutro in neutros_llm) / len(neutros_llm) for emocao in emocoes]
+    return [[chance_sim(texto, emocao) - base[i] for i, emocao in enumerate(emocoes)] for texto in textos]
 
 
 def atencao_por_palavra(tokenizer, model, texto, decoder):
     inputs = tokenizer(texto, truncation=True, max_length=128, return_offsets_mapping=True, return_tensors="pt")
     offsets = inputs.pop("offset_mapping")[0].tolist()
-    inputs = inputs.to(device)
+    inputs = inputs.to(model.device)
 
     with torch.no_grad():
         atencao = model(**inputs, output_attentions=True).attentions[-1][0].float().mean(dim=0)
