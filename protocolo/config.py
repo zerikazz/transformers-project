@@ -1,6 +1,7 @@
-versao = "v1"
+versao = "v2"
 semente = 42
 amostra = 300
+calibracao = 600
 reamostragens = 1000
 
 conjuntos = ["carolina", "tweets", "goemotions"]
@@ -24,7 +25,7 @@ tarefas = {
             "positivo": ["Adorei, foi maravilhoso!", "Que notícia boa, estou feliz.", "Isso ficou ótimo, parabéns."],
         },
         "hipotese": "O sentimento deste texto é {}.",
-        "pergunta": "Texto: \"{texto}\"\nPergunta: O sentimento deste texto é {rotulo}? Responda apenas sim ou não.\nResposta:",
+        "pergunta": "Texto: \"{texto}\"\nPergunta: O sentimento deste texto é {rotulo}? Responda apenas sim ou não.",
         "resumo": "Texto: \"{texto}\"\nEm uma palavra, o sentimento deste texto é:",
         "lexico": "dados/lexico_polaridade.csv",
         "treino": "dados/tweets_train.csv",
@@ -41,7 +42,7 @@ tarefas = {
             "nojo": ["Que nojo!", "Isso é repugnante.", "Senti nojo daquilo."],
         },
         "hipotese": "Este texto expressa {}.",
-        "pergunta": "Texto: \"{texto}\"\nPergunta: Este texto expressa {rotulo}? Responda apenas sim ou não.\nResposta:",
+        "pergunta": "Texto: \"{texto}\"\nPergunta: Este texto expressa {rotulo}? Responda apenas sim ou não.",
         "resumo": "Texto: \"{texto}\"\nEm uma palavra, a emoção deste texto é:",
         "lexico": "dados/lexico.csv",
         "treino": "dados/goemotions_treino.csv",
