@@ -33,7 +33,7 @@ id_do_arquivo() {
   drive -G "$DRIVE" \
     --data-urlencode "q=name = '$NOME_NO_DRIVE' and '$PASTA_NO_DRIVE' in parents and trashed = false" \
     --data-urlencode "fields=files(id)" \
-    | python -c "import json, sys; arquivos = json.load(sys.stdin)['files']; print(arquivos[0]['id'] if arquivos else '', end='')"
+    | python -c "import json, sys; arquivos = json.load(sys.stdin).get('files') or []; print(arquivos[0]['id'] if arquivos else '', end='')"
 }
 
 cria_arquivo() {
@@ -88,7 +88,11 @@ confere_variavel() {
 
 comando_pull() {
   usa_configuracao_do_projeto
-  baixa_do_drive | escreve_env
+  local conteudo
+  conteudo="$(baixa_do_drive)"
+  [[ -n "$conteudo" ]] || { aviso "O $NOME_NO_DRIVE do Drive veio vazio, deixei o $ARQUIVO_ENV local como estava"; exit 1; }
+  printf '%s\n' "$conteudo" | escreve_env
+  unset conteudo
 }
 
 comando_push() {
