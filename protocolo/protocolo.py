@@ -20,7 +20,7 @@ familias = {
         "nli": "MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7",
     },
     "deepseek": {
-        "llm": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+        "llm": os.environ.get("LLM", "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"),
     },
 }
 
@@ -28,7 +28,8 @@ familia = os.environ.get("FAMILIA", "transformer")
 amostra = int(os.environ.get("AMOSTRA", 100))
 caminho_lexico = os.environ.get("LEXICO", "dados/lexico.csv")
 conjunto = os.environ.get("CONJUNTO", "carolina")
-saida = f"saida/juizes_{familia}_{conjunto}.csv"
+nome_saida = familias["deepseek"]["llm"].split("/")[-1].lower() if familia == "deepseek" else familia
+saida = f"saida/juizes_{nome_saida}_{conjunto}.csv"
 semente = 42
 
 random.seed(semente)
@@ -61,7 +62,7 @@ modelos = familias[familia]
 if familia == "deepseek":
     tokenizer, model = carregar(modelos["llm"], decoder=True)
     scores = {
-        "embeddings": juiz_embeddings(tokenizer, model, textos),
+        "embeddings": juiz_embeddings(tokenizer, model, textos, decoder=True),
         "nli": juiz_nli_llm(tokenizer, model, textos),
         "atencao": juiz_atencao(tokenizer, model, textos, lexico, decoder=True),
     }
