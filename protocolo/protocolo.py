@@ -74,7 +74,7 @@ for conjunto in conjuntos + ["calibracao"]:
 
         for i, linha in enumerate(linhas):
             validos = [v for v in votos[i] if v]
-            maioria = max(set(validos), key=validos.count) if validos else ""
+            maioria = max(validos, key=validos.count) if validos else ""
             concordancia = validos.count(maioria) if validos else 0
             concordancias.append(concordancia)
             maiorias.append(maioria)
